@@ -1,0 +1,210 @@
+---
+title: I heard you like streaming movies...
+author: Atakan Ekiz
+date: '2020-06-14'
+slug: i-heard-you-like-streaming-movies
+categories:
+  - data
+tags:
+  - movies
+subtitle: ''
+summary: ''
+authors: []
+lastmod: '2020-06-15T00:05:02-06:00'
+featured: no
+image:
+  caption: ''
+  focal_point: ''
+  preview_only: no
+projects: []
+commentable: true
+---
+
+
+```{r setup, include=F}
+
+
+
+knitr::opts_chunk$set(echo=F,
+                      message=F,
+                      warning=F,
+                      dpi=300,
+                      fig.align="center")
+```
+
+
+When was the last time you wanted to stream a movie and spent more time searching for one than watching it? Picking a good movie to watch is becoming more and more difficult thanks to an ever-increasing number of choices we have in streaming nowadays. Netflix, Hulu, Amazon Prime Video, and Disney Plus are among the top sites for watching movies and TV shows. I have always wanted look at the offerings on these platforms and perform a head-to-head comparison. A nice dataset I found on [Kaggle (credit: Ruchi Bhatia)](https://www.kaggle.com/ruchi798/movies-on-netflix-prime-video-hulu-and-disney) made it easy to analyze the movies on these platforms and their critic scores from [IMDb](https://www.imdb.com/) and [Rotten Tomatoes](https://www.rottentomatoes.com/).
+
+
+
+
+```{r load_data}
+
+library(data.table)
+
+dat <- fread("c:/RDATA/MoviesOnStreamingPlatforms_kaggle_ruchi798.csv", check.names = T)
+
+colnames(dat) <- gsub("Disney.", "Disney.Plus", colnames(dat))
+
+dat$Rotten.Tomatoes <- as.numeric(gsub("%", "", dat$Rotten.Tomatoes))
+
+
+dat_melt <- melt(dat, measure.vars = c("Netflix", "Hulu", "Prime.Video", "Disney.Plus"), variable.name = "platform", value="present_absent")
+
+dat_melt <- dat_melt[present_absent !=0 ,]
+
+
+platform_summary <- dat_melt[, .(avg_RT = signif(mean(Rotten.Tomatoes, na.rm = T), 4),
+                                 sd_RT = signif(sd(Rotten.Tomatoes, na.rm = T), 4),
+                                 avg_IMDB = signif(mean(IMDb, na.rm=T), 4),
+                                 sd_IMDB = signif(sd(IMDb, na.rm = T),4),
+                                 number_of_mv = .N
+),
+by=platform][, label:=paste0("Number of movies: ", number_of_mv,
+                             "\nAvg. Rotten Tomatoes: ", avg_RT,
+                             "\nAvg. IMDb: ", avg_IMDB)]
+
+all_genres <- unique(unlist(strsplit(dat_melt$Genres, ",")))
+
+
+dat_melt[, (all_genres) := lapply(all_genres, function(x) grepl(x, Genres))] 
+
+
+```
+
+
+One of the main factors for me and my wife to decide on a movie is the release date. We have our days of enjoying oldies-and-goldies but usually we don't stray too far off current times. The graphs below show the distribution of all the content (including movies and TV shows) in four platforms based on the release year. Prime Video had the highest number of offerings and Disney Plus had the lowest. Averages overall critic cores from IMBD and Rotten Tomatoes were comparable. 
+
+
+```{r}
+
+library(ggplot2)
+library(ggpubr)
+
+# https://brandcolors.net/
+brand_colors <- c("#e50914", "#99cc33", "#146eb4", "#520099")
+
+
+gghistogram(dat_melt, "Year", facet.by = "platform", 
+            scales="free", ylab="Number of content",
+            fill="platform", bins=50, palette = brand_colors) +
+    xlim(c(1925, 2022))+
+    theme_bw()+
+    geom_text(data=platform_summary, aes(-Inf, -Inf, label=label),
+              hjust=-0.05, vjust=-1.5, ) +
+    theme(legend.position = "none")
+
+```
+
+[Rotten Tomatoes](https://www.rottentomatoes.com/) critic score is often spot-on for how the movie is going to turn out and plays a major role for us in deciding on whether or not to watch a movie. You should check out some of the hilarious reviews written on bad movies. One of my favorites is this one written about Jack and Jill (2011):
+
+> The only thing worse than an Adam Sandler film these days is one with two Adam Sandlers...
+
+Anyways, let's take a look at the distribution of Rotten Tomatoes scores on these platforms. Things look evenly distributed for the most part. 
+
+```{r}
+
+
+gghistogram(dat_melt, "Rotten.Tomatoes", facet.by = "platform", 
+            scales="free",xlab="Rotten Tomatoes Critic Score", ylab="Number of content",
+            fill="platform", bins=50, palette = brand_colors) +
+    theme_bw() +
+    theme(legend.position = "none")
+
+
+```
+
+Unlike Rotten Tomatoes scores, I don't usually find IMDB scores useful for telling the movie quality. Most movies I look at score 6-7, and IMDB seems to score older movies higher than the new ones. You can see the distribution of IMDB scores are actually a bell-shaped curve peaking around 6-7:
+
+```{r}
+
+gghistogram(dat_melt, "IMDb", facet.by = "platform", 
+            scales="free",xlab="IMDB Score", ylab="Number of content",
+            fill="platform", bins=50, palette = brand_colors) +
+    theme_bw() +
+    theme(legend.position = "none")
+
+
+```
+
+
+
+```{r movies_per_genre, fig.width=10, fig.height=5, eval=F}
+
+
+genre_bkdwn <- dat_melt[, lapply(.SD, sum), by="platform", .SDcols = all_genres]
+
+total_mov <- c(n=3560, h=903, p=12354, d=564)
+temp <- apply(genre_bkdwn[, 2:ncol(genre_bkdwn)], MARGIN = 2, function(x) 100*x/a)
+
+genre_bkdwn <- cbind(genre_bkdwn[,1], temp)
+
+genre_bkdwn <- melt(genre_bkdwn, measure.vars = all_genres,
+                    value.name = "number_of_mv", variable.factor = T, variable.name = "genre")
+
+ggbarplot(genre_bkdwn, x="genre", y="number_of_mv", 
+          fill="platform", facet.by = "platform", 
+          scales="free_y", palette = brand_colors) +
+    theme_bw()+
+    rotate_x_text(45)+
+    theme(legend.position = "none")
+    
+    
+    
+    ggbarplot(genre_bkdwn, x="genre", y="number_of_mv", fill="platform") +
+    rotate_x_text(45)
+
+
+```
+
+
+
+```{r genre_circle_plots, fig.height=12, fig.width=12, eval=T}
+
+library(circlize)
+
+# Create adjacency matrices for interaction plotting.
+adj_all <- crossprod(as.matrix(dat_melt[, ..all_genres]))
+# adj_netflix <- crossprod(as.matrix(dat_melt[platform == "Netflix", ..all_genres]))
+# adj_hulu <- crossprod(as.matrix(dat_melt[platform == "Hulu", ..all_genres]))
+# adj_disney <- crossprod(as.matrix(dat_melt[platform == "Disney.Plus", ..all_genres]))
+# adj_prime <- crossprod(as.matrix(dat_melt[platform == "Prime.Video", ..all_genres]))
+
+
+keep_genres <- rownames(adj_all)[!rownames(adj_all) %in% c("Game-Show", "Talk-Show", "Reality-TV", "Film-Noir", "News", "Short", "Documentary", "Sport", "Family", "Biography", "Music")]
+
+unkeep_genres <- c("Game-Show", "Talk-Show", "Reality-TV", "Film-Noir", "News", "Short", "Documentary", "Sport", "Family", "Biography", "Music")
+
+```
+
+I love circular plots, especially when they are interactive. Below you can see the how the movie genres interact with one another. When you hover your mouse on the plot (or tap on mobile) it will show which genres usually go together with others. The slices that fall back on indicate movies that were tagged to be only one genre (such as Horror or Drama only). Check out romance genre: two most related genres are "comedy" and "drama". That tells you something about relationships eh?
+
+```{r, fig.height=8, fig.width=8}
+
+# chord
+
+library(widgetframe)
+library(chorddiag)
+
+frameWidget(
+  chorddiag(adj_all[keep_genres, keep_genres], showTicks = F, width = 650, height = 650))
+
+```
+
+
+
+
+
+```{r, eval=F}
+
+# Lastly, here is the list of top movies (as rated by Rotten Tomatoes scores) on each platform. How many of these have you seen already?
+
+dat_melt2 <- dat_melt[!grepl(paste0(unkeep_genres,collapse = "|"), Genres), ][
+  order(Rotten.Tomatoes, IMDb, decreasing = T), head(.SD, 20), by="platform"]
+
+```
+
+
+
+
+

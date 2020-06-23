@@ -1,0 +1,274 @@
+---
+title: Understanding Lasso and Ridge Regression
+author: Atakan Ekiz
+date: '2020-06-16'
+slug: understanding-lasso-and-ridge-regression
+categories: 
+  - technical
+tags:
+  - R
+  - machine-learning
+  - linear-models
+subtitle: ''
+summary: "To understand how these algorithms work, let's make up a toy data frame about shark attacks. Imagine that we are trying to find out the factors that are associated with the number of shark attacks at a given location."
+authors: []
+lastmod: '2020-06-16T17:45:51-06:00'
+featured: no
+image:
+  caption: 'jimo663, Pixabay'
+  focal_point: ''
+  preview_only: no
+projects: []
+draft: false
+commentable: true
+output:
+  blogdown::html_page:
+    toc: true
+---
+
+## Backdrop
+
+I recently started using machine learning algorithms (namely lasso and ridge regression) to identify the genes that correlate with different clinical outcomes in cancer. Coming purely from a biology background, I needed to brush up on my statistics concepts to make sense of the results I was getting. This is a "note-to-self" type post to wrap my mind around how lasso and ridge regression works, and I hope it would be helpful for others like me. For more information, I recommend [An Introduction to Statistical Learning](http://faculty.marshall.usc.edu/gareth-james/ISL/), and [The Elements of Statistical Learning](https://web.stanford.edu/~hastie/ElemStatLearn/) books written by Garreth James, Daniela Witten, Trevor Hastie, and Robert Tibshirani (creators of few R packages commonly used for machine learning). The online course associated with the first book is available on [EdX](https://www.edx.org/course/statistical-learning) and it is taught by directly by Hastie and Tibshirani. Also, check out the [StatQuest videos](https://www.youtube.com/watch?v=Q81RR3yKn30&t=2s) from Josh Starmer to get the intuition behind lasso and ridge regression.
+
+
+Machine Learning (ML) in a nutshell is using algorithms to reveal patterns in data and predict outcomes in unknown data. Some of the numerous applications of ML include classifying disease subtypes (for instance, cancer), predicting purchasing behaviors of customers, and computer recognition of handwritten letters. Although there are several other machine learning algorithms, we will focus on lasso and ridge regression below.
+
+## Prepare toy data
+
+To understand how these algorithms work, let's make up a toy data frame about shark attacks. Imagine that we are trying to find out the factors that are associated with the number of shark attacks at a given location. Additionally, we might also want to make predictions about shark attacks based on other available data. In this example, the number of shark attacks is what's called the **response variable** (the thing we are trying to study or predict). The other measurements in the data frame constitute the **predictor variables** (the thing that might/might not impact the response variable). 
+
+Our data frame will consist of 1000 daily measurements of the following independent variables:
+
+- `attacks`: Number of shark attacks (response variable)
+- `swimmers`: Number of swimmers in water
+- `watched_jaws`: Percentage of swimmers who watched iconic Jaws movies
+- `temp`: Average temperature of the day 
+- `stock_price`: The price of your favorite tech stock that day (a totally unrelated variable)
+
+Towards the end of the post, I will add co-linear (ie. correlated) variables and we will see how this impacts the results.
+
+
+```{r, fig.height=8, fig.width=8}
+
+# For reproducible results
+set.seed(123)
+
+# Number of observations
+num <- 500
+
+
+
+
+dat <- data.frame(watched_jaws = rnorm(n=num, mean=50, sd=10),
+                  swimmers = round(rnorm(n=num, mean=500, sd=100)),
+                  temp = rnorm(n=num, mean=90, sd=2),
+                  stock_price = runif(n=num, min = 100, max=150))
+
+attacks <- round(rnorm(n=num, mean = 30, sd=10)+ # noise
+  -2*dat$watched_jaws+ # 1 fewer attack for 1 percent increase in Jaws movie audience
+  0.1*dat$swimmers+ # 1 more attack for each 10 swimmers on site
+  1*dat$temp+ # 1 more attack for each degrees of increase in temp
+  0*dat$stock_price) # no relationship
+
+dat$attacks <- attacks
+
+plot(dat)
+
+
+
+
+```
+
+
+Just eye-balling the data, we see some predictors are more strongly correlated with the number of shark attacks. For instance, the number of attacks decrease as the percent of people on the beach who watched Jaws movies decreases.
+
+
+
+Lasso and Ridge regression are built on linear modeling, and like linear models, they try to find the relationship between predictors ($x_1, x_2, ... x_n$) and response variable ($y$) as follows:
+
+$$y =  \beta_0 + \beta_1x_1 + \beta_2x_2+ \cdots +\beta_nx_n$$
+
+Here, the coefficients $\beta_1, \cdots ,\beta_n$ correspond to the amount of expected change in the response variable for a unit increase/decrease in the predictor variables. $\beta_0$ is the intercept and it corresponds to the variation that is not captured by the other coefficients in the model (or alternatively the value of $y$ when all the other predictors are zero).
+
+
+Lasso and Ridge regression applies a mathematical penalty on the predictor variables that are less important for explaining the variation in the response variable. This way, they enable us to focus on the strongest predictors for understanding how the response variable changes. This is referred to as *variable selection*. In our example here, we are trying to understand the factors determining the total number of shark attacks.
+
+## Simple linear modeling
+
+Let's take a look at how simple linear modeling looks on this data set:
+
+
+```{r}
+
+# Regress all the predictor variables onto "attacks" response variable
+res <- lm(attacks~., data=dat)
+
+summary(res)
+
+
+```
+
+Since we made up the data by adding predictors independently, all except `stock_price` were significantly associated with the number of attacks (note the low p-values under `Pr(>|t|)` column, or asterisks). `Estimate` column indicates the predicted coefficients for each variable, which are in agreement with our hard-coding during data prep. 
+
+## Ridge regression
+
+Let's see how the coefficients will change with Ridge regression. Ridge regression imposes a penalty on the coefficients to shrink them towards zero, but it doesn't set any coefficients to zero. Thus, it doesn't automatically do feature selection for us (i.e. all the variables we feed in the algorithm are retained in the final linear formula, see below).
+
+```{r}
+
+library(glmnet)
+
+# Prepare glmnet input as matrix of predictors and response var as vector
+varmtx <- model.matrix(attacks~.-1, data=dat)
+response <- dat$attacks
+
+# alpha=0 means ridge regression. 
+ridge <- glmnet(scale(varmtx), response, alpha=0)
+
+# Cross validation to find the optimal lambda penalization
+cv.ridge <- cv.glmnet(varmtx, response, alpha=0)
+
+lbs_fun <- function(fit, offset_x=1, ...) {
+  L <- length(fit$lambda)
+  x <- log(fit$lambda[L])+ offset_x
+  y <- fit$beta[, L]
+  labs <- names(y)
+  text(x, y, labels=labs, ...)
+}
+
+
+plot(ridge, xvar = "lambda", label=T)
+lbs_fun(ridge)
+abline(v=cv.ridge$lambda.min, col = "red", lty=2)
+abline(v=cv.ridge$lambda.1se, col="blue", lty=2)
+
+
+```
+
+This plot shows us a few important things:
+
+- **Y-axis:** Regularized coefficients for each variable (ie. coefficients after penalization is applied)
+- **X-axis:** Logarithm of the penalization parameter Lambda ($\lambda$). The higher value of lambda indicates more regularization (ie. reduction of the coefficient magnitude, or shrinkage)
+- **Curves:** Change in the predictor coefficients as the penalty term increases.
+- **Numbers on top:** The number of variables in the regression model. Since Ridge regression doesn't do feature selection, all the predictors are retained in the final model.
+- **Red dotted line:** The minimum value of lambda (`lambda.min`) that results in the smallest cross-validation error. We would use this lambda value (or `lambda.1se` below) for predicting outcomes in a new dataset.
+- **Blue dotted line:** The largest value of lambda (ie. more regularized) within the 1 standard error of the `lambda.min`
+- Log Lambda = 0 corresponds to "no regularization" (ie. regular linear model).
+
+
+The way we read the plot is as follows:
+
+Among the variables in the data frame, `watched_jaws` has the strongest potential to explain the variation in the response variable, and this remains true as the model regularization increases. `swimmers` has the second strongest potential to model the response, but it's importance diminishes near zero as the regularization is increased around `lambda.1se` threshold.
+
+
+
+## Lasso regression
+
+Now, let's take a look at the lasso regression. This method uses a different penalization approach which allows some coefficients to be exactly zero. Thus, lasso performs feature selection and returns a final model with lower number of parameters. 
+
+
+```{r}
+
+
+# alpha=1 means lasso regression. 
+lasso <- glmnet(scale(varmtx), response, alpha=1)
+
+# Cross validation to find the optimal lambda penalization
+cv.lasso <- cv.glmnet(varmtx, response, alpha=1)
+
+
+plot(lasso, xvar = "lambda", label=T)
+lbs_fun(ridge, offset_x = -2)
+abline(v=cv.lasso$lambda.min, col = "red", lty=2)
+abline(v=cv.lasso$lambda.1se, col="blue", lty=2)
+
+
+
+```
+
+
+The main difference we see here is the curves collapsing to zero as the lambda increases. Dashed lines indicate the `lambda.min` and `lambda.1se` values from cross-validation as before. `watched_jaws` variable shows up here as well to explain shark attacks. If we choose the `lambda.min` value for predictions, the algorithm would utilize data from both `swimmers`, `watched_jaws`, and `temp` variables. If we choose `lambda.1se` instead (blue dashed line), we would predict only using the `watched_jaws` and `swimmers` variables. This means at this level of penalization, `temp` isn't as important for modeling shark attacks. Pretty neat, especially if you are trying to find a needle in the haystack. For me, the needles were genes associated with clinical outcome in cancer patients, and the haystack was the entire human genome!
+
+
+## Problem of co-linearity
+
+Strong correlation between predictors, or co-linearity, is a problem in machine learning since it can make predictions unstable. The essence of the issue is the following. Consider two predictor variables, $x_1$ and $x_2$, which are perfectly correlated with each other. In this case, the fitted regression formula can be written in many equivalent ways:
+
+$$y= \beta_0 + x_1 + x_2$$
+
+$$y= \beta_0 + 0.5\times x_1 + 2 \times x_2$$
+
+$$y= \beta_0 + 0.1\times x_1 + 10 \times x_2$$
+
+Let's see how ridge and lasso behaves when we added strong co-linear predictors. I'm going to add two variables, `colinear1` and `colinear2` , that closely follow `watched_jaws` variable.
+
+
+```{r, fig.height=6, fig.width=6}
+
+
+
+dat$colinear1 <- dat$watched_jaws + rnorm(n=num, mean=0, sd=1)
+dat$colinear2 <- -dat$watched_jaws + rnorm(n=num, mean=0, sd=1)
+
+plot(dat[, colnames(dat) %in% c("watched_jaws", "colinear1", "colinear2", "attacks")])
+
+
+```
+
+
+
+```{r}
+# Prepare glmnet input as matrix of predictors and response var as vector
+varmtx <- model.matrix(attacks~.-1, data=dat)
+response <- dat$attacks
+
+
+# alpha=0 means ridge regression. 
+ridge2 <- glmnet(scale(varmtx), response, alpha=0)
+
+# Cross validation to find the optimal lambda penalization
+cv.ridge2 <- cv.glmnet(varmtx, response, alpha=0)
+
+
+
+# alpha=1 means lasso regression. 
+lasso2 <- glmnet(scale(varmtx), response, alpha=1)
+
+# Cross validation to find the optimal lambda penalization
+cv.lasso2 <- cv.glmnet(varmtx, response, alpha=1)
+
+
+```
+
+
+```{r, fig.width=10, fig.height=5}
+
+par(mfrow=c(1,2))
+par(mar=c(4,2,6,2))
+
+plot(ridge2, xvar = "lambda", label=T)
+lbs_fun(ridge2, offset_x = 1)
+abline(v=cv.ridge2$lambda.min, col = "red", lty=2)
+abline(v=cv.ridge2$lambda.1se, col="blue", lty=2)
+title("Ridge (with co-linearity)", line=2.5)
+
+
+
+plot(lasso2, xvar = "lambda", label=T)
+lbs_fun(lasso2, offset_x = 1)
+abline(v=cv.lasso2$lambda.min, col = "red", lty=2)
+abline(v=cv.lasso2$lambda.1se, col="blue", lty=2)
+title("Lasso (with co-linearity)", line=2.5)
+
+```
+
+
+
+As we can see here, lasso and ridge performs quite differently when there are correlated variables. Ridge treats the correlated variables in the same way, (ie. it shrinks their coefficients similarly), while lasso collapses some of the correlated parameters to zero (note `colinear1` and `colinear2` are zero along the regularization path). In other words, lasso drops the co-linear predictors from the fit. This is an important point to consider when analyzing real world data. One can think of looking at correlation matrices to examine the variables before the analysis. Alternatively we can perform both lasso and ridge regression and try to see which variables are kept by ridge while being dropped by lasso due to co-linearity. We didn't discuss in this post, but there is a middle ground between lasso and ridge as well, which is called the **elastic net**. Using this method is very simple, and it requires setting `alpha` parameter between `0` and `1`. As a follow-up to this post (which happens to be my first post on [R-bloggers](https://www.r-bloggers.com)), we will examine at which point co-linearity becomes an issue and how it will impact prediction performance. Until then, I will leave you with a couple of take home points:
+
+- Linear modeling, lasso, and ridge try to explain the relationship between **response** and **predictor variables**
+- Both lasso and ridge impose a **penalty term (lambda)** on the coefficients of predictors (althought the math is different)
+- Lasso can shrink coefficients all the way to zero resulting in **feature selection**
+- Ridge can shrink coefficients close to zero, but it will not set any of them to zero (ie. no feature selection)
+- **Co-linearity can be a problem** in both methods, and they produce different results for correlated variables
+

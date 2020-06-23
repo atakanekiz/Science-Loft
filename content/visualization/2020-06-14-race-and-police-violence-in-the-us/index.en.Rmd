@@ -1,0 +1,324 @@
+---
+title: Race and police violence in the US
+author: Atakan Ekiz
+date: '2020-06-14'
+slug: race-and-police-violence-in-the-us
+categories:
+  - data
+tags:
+  - census
+  - police
+  - race
+  - USA
+subtitle: ''
+summary: ''
+authors: []
+lastmod: '2020-06-14T23:34:03-06:00'
+featured: no
+image:
+  caption: 'Kelly Lacy, Unsplash'
+  focal_point: ''
+  preview_only: no
+projects: []
+comments: true
+---
+
+
+
+
+```{r setup, include=F}
+
+knitr::opts_chunk$set(echo=F, 
+                      results="hide", 
+                      message=F, 
+                      warning=F,
+                      dpi=300,
+                      fig.align="center")
+```
+
+```{r import_police_violence_data, warning=F, eval=F}
+
+library(ggmap)
+register_google(readLines("c:/RDATA/api_keys/google_maps_api_key.txt"))
+
+viol <- readxl::read_xlsx("c:/RDATA/mapping_police_violence_060220.xlsx",
+                          sheet = "2013-2019 Police Killings", col_types = "guess")
+
+latmapping <- viol %>%
+    select(County, State) %>%
+    distinct()
+
+suppressMessages(
+    latmapping$coord <- geocode(paste(latmapping$County, "County, ", latmapping$State))
+)
+
+viol <- left_join(viol, latmapping, by=c("State", "County"))
+
+latmapping2 <- viol %>%
+    pull(State) %>%
+    unique()
+
+state_coord <- geocode(latmapping2)
+
+state_coord <- cbind(data.frame(State=latmapping2), state_coord)
+
+colnames(state_coord)[2:3] <- c("state_lon", "state_lat")
+
+viol <- left_join(viol, state_coord)
+
+
+colnames(viol) <- gsub("Victim's ", "victims_", colnames(viol))
+colnames(viol) <- gsub(" ", "_", colnames(viol))
+colnames(viol) <- gsub("\\?", "", colnames(viol))
+
+viol$State <- state.name[match(viol$State, state.abb)]
+
+viol$victims_race <- factor(viol$victims_race)
+
+viol$lon <- viol$coord$lon
+viol$lat <- viol$coord$lat
+
+
+viol$State <- ifelse(is.na(viol$State), "D.C.", viol$State)
+
+
+saveRDS(viol, "c:/RDATA/police_violence_060320.rds")
+
+```
+
+```{r download_census_data, eval=F}
+
+library(tidyverse)
+library(tidycensus)
+
+census_api_key(readLines("C:/RDATA/api_keys/census_api_key.txt", warn=F))
+
+v18 <- load_variables(2018, "acs5", cache = TRUE)
+
+popvars <- c(white = "C02003_003",
+             black = "C02003_004",
+             indian = "C02003_005",
+             asian = "C02003_006",
+             islander = "C02003_007",
+             hispanic = "B03003_003",
+             nonhispnanic = "B03003_002")
+
+total <- "C02003_001"
+
+
+
+library(purrr)
+library(sf)
+options(tigris_use_cache=T)
+
+
+
+
+totalpop <- get_acs(geography = "county", 
+                    variables = popvars, 
+                    state = NULL, 
+                    summary_var = total,
+                    geometry = TRUE, shift_geo = T)
+
+
+colnames(totalpop)[3:4] <-c("race", "population")
+
+colnames(totalpop)[6:7] <- c("totalpop_est", "totalpop_moe")
+
+
+totalpop <- mutate(totalpop, percent = 100 * (population / totalpop_est))
+
+totalpop$county = unlist(lapply(strsplit(totalpop$NAME, ", "), function(x) x[1]))
+totalpop$state = unlist(lapply(strsplit(totalpop$NAME, ", "), function(x) x[2]))
+
+totalpop$county <- gsub(" County", "", totalpop$county)
+
+saveRDS(totalpop, "c:/RDATA/acs_us_population_by_race.rds")
+
+
+```
+
+
+The death of [George Floyd](https://en.wikipedia.org/wiki/Killing_of_George_Floyd) under police custody shook the US at its core and sparked nation-wide protests against police brutality and racism. This senseless killing of yet another unarmed black citizen made me wonder about the statistics about police violence and accountability. I found this curated data set from [mappingpoliceviolence.org](https://mappingpoliceviolence.org/) which summarizes the incidences of police violence between 2013 and 2019. I wanted to compare this data with the race statistics from the [US Census Bureau](https://www.census.gov/) to visually examine some trends.
+
+First let's take a look the prevalence of blacks and whites across the US at the county level. Mississippi, Louisiana, North and South Carolina are the states where blacks are the most concentrated:
+
+---
+
+```{r race_prevalence,  fig.height=3.5, fig.width=7}
+
+library(dplyr)
+library(ggplot2)
+library(sf)
+
+totalpop <- readRDS("c:/RDATA/acs_us_population_by_race.rds")
+
+labels <- c(black="Black", white="White")
+
+
+totalpop[totalpop$race %in% c("black", "white"), ] %>%
+    # filter(race %in% c("black", "white")) %>%
+    ggplot(aes(fill=percent)) +
+    facet_wrap(~race, labeller = labeller(race=labels)) +
+    geom_sf(color="NA") +
+    coord_sf(crs = 26915) +
+    scale_fill_viridis_c() +
+    theme_bw() +
+    theme(strip.text = element_text(size=14),
+          legend.text = element_text(size=12),
+          legend.title = element_text(size=14),legend.position = "top")
+
+```
+
+---
+
+```{r prepare_merged_df}
+
+
+
+viol <- readRDS("c:/RDATA/police_violence_060320.rds")
+
+
+blviol <- viol %>%
+    filter(victims_race == "Black") %>%
+    group_by(State, state_lon, state_lat) %>%
+    summarize(killings_per_state = n())
+
+
+totalpop_st <- totalpop %>%
+    filter(race=="black") %>%
+    group_by(race, state) %>%
+    summarize(population = sum(population),
+              statepop = sum(totalpop_est)) %>%
+    sf::st_set_geometry(NULL)
+
+
+merged <- left_join(blviol, totalpop_st, by=c("State"="state"))
+
+merged <- merged %>%
+    filter(!State %in% c("Hawaii", "Alaska")) %>%
+    mutate(killings_per_10k = 1e5*killings_per_state/statepop) %>%
+    mutate(percent = 100*population/statepop) %>%
+    mutate(killings_per_10k_bl = 1e5 * killings_per_state/population)
+
+```
+
+I was interested in looking at the relationship between the percentage of blacks in a state and the number of black deaths by police. With the increasing population size and the prevalence of blacks, we would expect a higher total number of blacks killed by police. To account for the population differences, we can look at the number of black deaths per 10,000 people of the total state population. With this normalization, we still see the expected correlation between the black prevalence and the number of deaths. Check out the three states that deviate from the rest: ***Oklahoma***, ***Missouri***, and ***Louisiana***. These states show an *unusually high* rate of black deaths by police considering the prevalence of blacks in the population. New York and Connecticut, on the other hand, have a lower rate of black deaths. Color-coding the states based on their position on the map adds an interesting dimension to the plot.
+
+---
+
+```{r bl_deaths_by_state, fig.height=4, fig.width=6.5}
+
+
+rownames(merged) <- merged$State
+
+model <- lm(killings_per_10k~percent, data=merged)
+
+res <- sort(residuals(model), decreasing = T)
+
+label <- c(names(head(res, 3)), names(tail(res, 3)))
+
+
+
+merged$label_col <- ifelse(merged$State %in% label, merged$State, NA)
+
+
+ggplot(merged, aes(percent, killings_per_10k)) +
+    geom_point(aes(shape=cut(state_lon, 4, labels = c("WW", "W", "E", "EE")), 
+                   color=cut(state_lat, 3, labels = c("South", "Middle", "North"))),  size=3.5)+
+    labs(shape="Longitude (East-West)", color="Latitude (North-South)")+
+    xlab("Percent Black in Population")+
+    ylab("Black deaths by police\n(per 10,000 total population)")+
+    scale_shape_manual(values = c(10, 16, 15, 17))+
+    scale_color_manual(values = c("coral", "skyblue", "gold2"))+
+    geom_smooth(method = "lm", formula = y ~ 0 + x, color="darkgray", alpha=0.2)+
+    theme_bw()+
+    theme(legend.text = element_text(size=12),
+          legend.title = element_text(size=14),
+          axis.title = element_text(size=12),
+          axis.text = element_text(size=10))+
+    geom_text(label=merged$label_col, vjust=3, hjust=0.55, nudge_y = 0.1, nudge_x = -0.4, check_overlap = T)
+
+
+
+```
+
+---
+
+The graphs above shows the data for all police violence incidence regardless of the circumstances of the encounter. In 67% of these encounters the black person was allegedly armed, and in 17% of them he/she was reported to be unarmed. Next, I wanted to examine the encounters with unarmed black people more closely. Data on whether or not the black person was fleeing wasn't always available (NA: not available), but at least 31% of these unarmed black victims were not running away. This is a staggering number... What happens to the officers involved in these killings? A vast majority of these cops are not even charged with any crime, and only a small percentage is actually convicted of any wrong doing.
+
+---
+
+```{r violence_details, fig.height=4, fig.width=6.5}
+
+library(ggpubr)
+
+blviol <- viol %>%
+    filter(victims_race == "Black") %>%
+    rename(Fleeing=`Fleeing_(Source:_WaPo)`) %>%
+    mutate(Fleeing = case_when(Fleeing=="not fleeing" ~ "Not fleeing",
+                               Fleeing == "0"~ "Other",
+                               Fleeing == "Other" ~ NA_character_,
+                               TRUE ~ Fleeing))
+
+
+blunarmed <- blviol %>%
+    filter(Unarmed == "Unarmed") %>%
+    mutate(Criminal_Charges = ifelse(Criminal_Charges == "No known charges", "No charge", 
+                                     ifelse(grepl("Convicted", Criminal_Charges),"Convicted", "Charged"))) %>%
+    mutate(Criminal_Charges = factor(Criminal_Charges, levels = c("No charge", "Charged", "Convicted")))
+
+
+blratio <- signif(100*sum(blunarmed$Criminal_Charges == "No charge") / dim(blunarmed)[1], 4)
+
+
+
+
+p1 <- blunarmed %>%
+    # filter(!is.na(Fleeing)) %>%
+    group_by(Fleeing) %>%
+    summarize(count=n()) %>%
+    mutate(prop=count/sum(count)) %>%
+    ggdotchart("Fleeing", "count", color="Fleeing", dot.size = 8, 
+               label = paste(signif(100*.$prop,3), "%"), 
+               title = "Was the person fleeing?", 
+               xlab="",
+               ylab = "Fatal incidents involving unarmed Blacks",
+               font.label = list(color = "black", size = 12, 
+                                 vjust = -2), legend="none", add = "segments",
+               add.params = list(size=3))+
+    expand_limits(y=185)+
+    rotate_x_text(0, vjust=0.5, hjust=0.5)
+
+
+
+p2 <- blunarmed %>%
+    group_by(Criminal_Charges) %>%
+    summarize(count=n()) %>%
+    mutate(prop=count/sum(count)) %>%
+    # ggbarplot("Criminal_Charges", "count", fill="Criminal_Charges")+
+    # rotate_x_text(45)
+    ggdotchart("Criminal_Charges", "count", color="Criminal_Charges", dot.size = 8, 
+               label = paste(signif(100*.$prop,3), "%"), 
+               title = "Was the officer charged?", 
+               xlab="",
+               ylab = expression("Fatal incidents involving unarmed Blacks"),
+               font.label = list(color = "black", size = 12, 
+                                 vjust = -2), legend="none", add = "segments",
+               add.params = list(size=3))+
+    expand_limits(y=330)+
+    rotate_x_text(0, vjust=0.5, hjust=0.5)
+
+
+
+
+ggarrange(p1, p2)
+
+
+```
+
+---
+
+We realize that most cops don't go around killing innocent people. Instead, they serve the community by putting themselves in the harm's way all the while not getting paid enough. However, the accountability may be the key factor in preventing future loss of life. If cops were held responsible for their actions leading to senseless killing of black citizens, I think they would think twice before choke-holding somebody or reaching for their gun to "neutralize a potential threat" 8 times. In the 21st century America, black people shouldn't have to worry about training their kids for a potential police encounter and fear for their lives in day-to-day living.
+
+<center><img src="https://media.giphy.com/media/KavDjhIR3QANy/giphy.gif"></center>
